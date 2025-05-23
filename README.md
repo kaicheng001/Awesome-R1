@@ -15,6 +15,8 @@ DeepSeek-R1 introduced a new paradigm of reasoning in large language models. Thi
 
 | Paper                                                | Code                                   | Models                                      | Dataset | Project Page                        | Date    |
 | ---------------------------------------------------- | -------------------------------------- | ------------------------------------------- | ------- | ----------------------------------- | ------- |
+| [R1-Searcher++: Incentivizing the Dynamic Knowledge Acquisition of LLMs  via Reinforcement Learning](https://arxiv.org/abs/2505.17005) | - | - | ARC | - | 2025.05.22 |
+| [GUI-G1: Understanding R1-Zero-Like Training for Visual Grounding in GUI  Agents](https://arxiv.org/abs/2505.15810) | - | - | ScreenSpot | - | 2025.05.21 |
 | [UniVG-R1: Reasoning Guided Universal Visual Grounding with Reinforcement Learning](https://arxiv.org/abs/2505.14231) | [AMAP-ML/UniVG-R1](https://github.com/AMAP-ML/UniVG-R1) | - | - | [UniVG-R1-page](https://amap-ml.github.io/UniVG-R1-page/) | 2025.05.20 |
 | [Table-R1: Region-based Reinforcement Learning for Table Understanding](https://arxiv.org/abs/2505.12415) | - | - | TableInstruct, TableBench, WikiTQ | - | 2025.05.18 |  
 | [Learning When to Think: Shaping Adaptive Reasoning in R1-Style Models via Multi-Stage RL](https://arxiv.org/abs/2505.10832) | [TU2021/AutoThink](https://github.com/TU2021/AutoThink) | [AutoThink](https://huggingface.co/collections/SONGJUNTU/autothink-682624e1466651b08055b479) | MATH, Minerva, Olympiad, AIME24, AMC23 | - | 2025.05.16 |
