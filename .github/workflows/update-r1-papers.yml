@@ -22,13 +22,15 @@ jobs:
       - name: 💡 Set up uv
         uses: astral-sh/setup-uv@v6
 
-      - name: 🐽 Install Dependencies
-        run: uv pip install --system requests python-dateutil
+      - name: 🐍 Create virtualenv and install dependencies
+        run: |
+          uv venv .venv
+          .venv/bin/uv pip install requests python-dateutil
 
       - name: 🔍 Search and Update Papers
         id: search
         run: |
-          python .github/scripts/update_papers.py
+          .venv/bin/python .github/scripts/update_papers.py
           echo "has_changes=$(cat .github/has_changes.txt)" >> $GITHUB_OUTPUT
 
       - name: 📅 Get Current Date
@@ -44,7 +46,7 @@ jobs:
       - name: 📝 Create Commits
         if: steps.search.outputs.has_changes == 'true'
         run: |
-          python .github/scripts/commit_papers.py
+          .venv/bin/python .github/scripts/commit_papers.py
 
       - name: 🔀 Push to New Branch
         if: steps.search.outputs.has_changes == 'true'
