@@ -1,0 +1,157 @@
+name: 🤖 Auto Update R1 Papers
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 02:00 UTC (10:00 Beijing Time)
+  workflow_dispatch:
+
+jobs:
+  update-papers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 💡 Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: 🐍 Create virtualenv and install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install requests python-dateutil beautifulsoup4 lxml
+        shell: bash
+
+      - name: ⚖️ Configure Git
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: 📅 Get Current Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: 🔍 Search and Update Papers
+        id: search
+        run: |
+          source .venv/bin/activate
+          python .github/scripts/update_papers.py
+          echo "has_changes=$(cat .github/has_changes.txt)" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: 📝 Create Individual Commits
+        if: steps.search.outputs.has_changes == 'true'
+        run: |
+          source .venv/bin/activate
+          BRANCH_NAME="auto-update/r1-papers-${{ steps.date.outputs.date }}"
+          
+          # Create and switch to new branch
+          git checkout -b "$BRANCH_NAME"
+          
+          # Read commit messages from the Python script output
+          if [ -f ".github/commit_messages.json" ]; then
+            # Install jq for JSON parsing
+            sudo apt-get update && sudo apt-get install -y jq
+            
+            # Get the current state before any commits
+            git add README.md
+            
+            # Read commit messages and create individual commits
+            COMMIT_MESSAGES=$(cat .github/commit_messages.json)
+            echo "$COMMIT_MESSAGES" | jq -r '.[]' | while IFS= read -r message; do
+              if [ ! -z "$message" ]; then
+                # Create a commit with the specific message
+                git commit -m "📄 $message" || echo "No changes to commit for: $message"
+              fi
+            done
+            
+            # If no individual commits were made, make one general commit
+            if [ -z "$(git log --oneline $BRANCH_NAME ^main 2>/dev/null)" ]; then
+              git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" || echo "No changes to commit"
+            fi
+          else
+            # Fallback: single commit
+            git add README.md
+            git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" || echo "No changes to commit"
+          fi
+          
+          # Push the branch
+          git push origin "$BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+        shell: bash
+
+      - name: 📜 Create Pull Request
+        if: steps.search.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "🤖 [Auto Update] New R1 Papers - ${{ steps.date.outputs.date }}"
+          body-path: .github/pr_body.md
+          base: main
+          branch: ${{ env.branch_name }}
+          draft: false
+          reviewers: "your-github-username"  # Replace with your GitHub username
+          labels: |
+            automated
+            papers
+            r1
+
+      - name: 📊 Job Summary
+        if: always()
+        run: |
+          if [ "${{ steps.search.outputs.has_changes }}" == "true" ]; then
+            echo "## ✅ Update Successful" >> $GITHUB_STEP_SUMMARY
+            echo "### 📈 Summary" >> $GITHUB_STEP_SUMMARY
+            if [ -f ".github/commit_messages.json" ]; then
+              PAPER_COUNT=$(cat .github/commit_messages.json | jq length)
+              echo "- **New papers found**: $PAPER_COUNT" >> $GITHUB_STEP_SUMMARY
+              echo "- **Branch created**: ${{ env.branch_name }}" >> $GITHUB_STEP_SUMMARY
+              echo "- **Status**: PR created and ready for review" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 📄 Papers Added" >> $GITHUB_STEP_SUMMARY
+              cat .github/commit_messages.json | jq -r '.[]' | while IFS= read -r message; do
+                echo "- $message" >> $GITHUB_STEP_SUMMARY
+              done
+            else
+              echo "- **Status**: PR created for review" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🔍 **Next Steps**: Review and merge the PR manually" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ℹ️ No Updates Needed" >> $GITHUB_STEP_SUMMARY
+            echo "No new R1 papers found in the last 2 days." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔎 Search Details" >> $GITHUB_STEP_SUMMARY
+            echo "- **Search scope**: Computer Science papers on arXiv" >> $GITHUB_STEP_SUMMARY
+            echo "- **Time range**: Last 2 days" >> $GITHUB_STEP_SUMMARY
+            echo "- **Patterns**: R1 as model/method name" >> $GITHUB_STEP_SUMMARY
+            echo "- **Next check**: Tomorrow at 02:00 UTC" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          rm -f .github/has_changes.txt \
+                .github/commit_messages.json \
+                .github/pr_body.md
+
+      - name: 🚨 Error Notification
+        if: failure()
+        run: |
+          echo "## ❌ Workflow Failed" >> $GITHUB_STEP_SUMMARY
+          echo "The auto-update process encountered an error." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔧 Possible Issues" >> $GITHUB_STEP_SUMMARY
+          echo "- arXiv API connection problems" >> $GITHUB_STEP_SUMMARY
+          echo "- README.md format changes" >> $GITHUB_STEP_SUMMARY
+          echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependencies installation failure" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 **Action Required**: Check workflow logs and fix issues"
