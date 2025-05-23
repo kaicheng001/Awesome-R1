@@ -25,7 +25,7 @@ jobs:
         run: |
           uv venv .venv
           source .venv/bin/activate
-          uv pip install requests python-dateutil
+          uv pip install requests python-dateutil beautifulsoup4
         shell: bash
 
       - name: 🔍 Search and Update Papers
