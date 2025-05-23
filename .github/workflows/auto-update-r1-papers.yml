@@ -4,6 +4,22 @@ on:
   schedule:
     - cron: '0 2 * * *'  # Daily at 02:00 UTC (10:00 Beijing Time)
   workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable debug mode for detailed output'
+        required: false
+        default: false
+        type: boolean
+      force_update:
+        description: 'Force update even if no changes'
+        required: false
+        default: false
+        type: boolean
+      days_back:
+        description: 'Days to look back for papers (default: 3)'
+        required: false
+        default: '3'
+        type: string
 
 jobs:
   update-papers:
@@ -19,14 +35,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 💡 Set up uv
-        uses: astral-sh/setup-uv@v6
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-      - name: 🐍 Create virtualenv and install dependencies
+      - name: 📦 Install dependencies
         run: |
-          uv venv .venv
-          source .venv/bin/activate
-          uv pip install requests python-dateutil beautifulsoup4 lxml
+          python -m pip install --upgrade pip
+          pip install requests python-dateutil lxml
         shell: bash
 
       - name: ⚖️ Configure Git
@@ -36,122 +53,245 @@ jobs:
 
       - name: 📅 Get Current Date
         id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: 🔍 Search and Update Papers
         id: search
         run: |
-          source .venv/bin/activate
-          python .github/scripts/update_papers.py
-          echo "has_changes=$(cat .github/has_changes.txt)" >> $GITHUB_OUTPUT
+          echo "🚀 Starting R1 Papers Bot..."
+          echo "📅 Run time: $(date)"
+          echo "🔧 Debug mode: ${{ github.event.inputs.debug_mode || 'false' }}"
+          echo "🔧 Days back: ${{ github.event.inputs.days_back || '3' }}"
+          
+          # Run the Python script with appropriate flags
+          PYTHON_ARGS=""
+          if [ "${{ github.event.inputs.debug_mode }}" == "true" ]; then
+            PYTHON_ARGS="$PYTHON_ARGS --debug"
+          fi
+          
+          # For GitHub Actions, don't cleanup (workflow handles it)
+          PYTHON_ARGS="$PYTHON_ARGS --no-cleanup"
+          
+          python .github/scripts/update_papers.py $PYTHON_ARGS
+          
+          # Check if changes were made
+          if [ -f ".github/has_changes.txt" ]; then
+            HAS_CHANGES=$(cat .github/has_changes.txt)
+            echo "has_changes=$HAS_CHANGES" >> $GITHUB_OUTPUT
+            echo "📊 Has changes: $HAS_CHANGES"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "📊 Has changes: false (no file found)"
+          fi
         shell: bash
 
-      - name: 📝 Create Individual Commits
-        if: steps.search.outputs.has_changes == 'true'
+      - name: 📅 Keep Repository Active
+        if: steps.search.outputs.has_changes == 'false'
         run: |
-          source .venv/bin/activate
-          BRANCH_NAME="auto-update/r1-papers-${{ steps.date.outputs.date }}"
+          # Keep repository active to prevent workflow suspension
+          LAST_COMMIT_DATE=$(git log -1 --format=%ct 2>/dev/null || echo "0")
+          CURRENT_DATE=$(date +%s)
+          DAYS_SINCE=$((($CURRENT_DATE - $LAST_COMMIT_DATE) / 86400))
+          
+          echo "📊 Days since last commit: $DAYS_SINCE"
+          
+          if [ $DAYS_SINCE -gt 25 ] || [ "${{ github.event.inputs.force_update }}" == "true" ]; then
+            echo "🔄 Creating keep-alive commit..."
+            mkdir -p .github
+            echo "# Repository Keep-Alive" > .github/keep-alive.md
+            echo "" >> .github/keep-alive.md
+            echo "Last automatic check: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> .github/keep-alive.md
+            echo "Status: No new R1 papers found" >> .github/keep-alive.md
+            echo "Search scope: Last ${{ github.event.inputs.days_back || '3' }} days" >> .github/keep-alive.md
+            echo "" >> .github/keep-alive.md
+            echo "This file is automatically updated to keep the repository active" >> .github/keep-alive.md
+            echo "and prevent scheduled workflows from being disabled." >> .github/keep-alive.md
+            
+            git add .github/keep-alive.md
+            if git diff --staged --quiet; then
+              echo "ℹ️ No changes to commit for keep-alive"
+            else
+              git commit -m "🤖 Keep repository active - $(date +'%Y-%m-%d')"
+              git push
+              echo "✅ Repository keep-alive commit created"
+            fi
+          else
+            echo "ℹ️ Repository is active, no keep-alive needed"
+          fi
+
+      - name: 📝 Create Individual Commits and Branch
+        if: steps.search.outputs.has_changes == 'true'
+        id: commits
+        run: |
+          BRANCH_NAME="auto-update/r1-papers-${{ steps.date.outputs.timestamp }}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
           
           # Create and switch to new branch
           git checkout -b "$BRANCH_NAME"
           
-          # Read commit messages from the Python script output
+          # Check if commit messages file exists
           if [ -f ".github/commit_messages.json" ]; then
+            echo "📝 Found commit messages file"
+            
             # Install jq for JSON parsing
             sudo apt-get update && sudo apt-get install -y jq
             
-            # Get the current state before any commits
+            # Stage the README changes
             git add README.md
             
             # Read commit messages and create individual commits
-            COMMIT_MESSAGES=$(cat .github/commit_messages.json)
-            echo "$COMMIT_MESSAGES" | jq -r '.[]' | while IFS= read -r message; do
-              if [ ! -z "$message" ]; then
-                # Create a commit with the specific message
-                git commit -m "📄 $message" || echo "No changes to commit for: $message"
+            COMMIT_COUNT=0
+            while IFS= read -r message; do
+              if [ ! -z "$message" ] && [ "$message" != "null" ]; then
+                # Create individual commit for each paper
+                git commit -m "📄 Add $message" --allow-empty
+                COMMIT_COUNT=$((COMMIT_COUNT + 1))
+                echo "✅ Created commit for: $message"
               fi
-            done
+            done < <(cat .github/commit_messages.json | jq -r '.[]' 2>/dev/null || echo "")
+            
+            echo "📊 Created $COMMIT_COUNT individual commits"
             
             # If no individual commits were made, make one general commit
-            if [ -z "$(git log --oneline $BRANCH_NAME ^main 2>/dev/null)" ]; then
-              git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" || echo "No changes to commit"
+            if [ $COMMIT_COUNT -eq 0 ]; then
+              git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" --allow-empty
+              echo "📝 Created fallback commit"
             fi
           else
-            # Fallback: single commit
+            echo "⚠️ No commit messages file found, creating general commit"
             git add README.md
-            git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" || echo "No changes to commit"
+            git commit -m "🤖 Auto update: Add new R1 papers - ${{ steps.date.outputs.date }}" --allow-empty
           fi
           
           # Push the branch
           git push origin "$BRANCH_NAME"
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "🚀 Pushed branch: $BRANCH_NAME"
         shell: bash
 
       - name: 📜 Create Pull Request
         if: steps.search.outputs.has_changes == 'true'
+        id: pr
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           title: "🤖 [Auto Update] New R1 Papers - ${{ steps.date.outputs.date }}"
           body-path: .github/pr_body.md
           base: main
-          branch: ${{ env.branch_name }}
+          branch: ${{ steps.commits.outputs.branch_name }}
           draft: false
-          reviewers: "your-github-username"  # Replace with your GitHub username
           labels: |
             automated
             papers
             r1
+            enhancement
 
-      - name: 📊 Job Summary
+      - name: 📊 Workflow Health Check
+        run: |
+          echo "## 🔍 Workflow Health Report" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Debug mode**: ${{ github.event.inputs.debug_mode || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Days back**: ${{ github.event.inputs.days_back || '3' }}" >> $GITHUB_STEP_SUMMARY
+          
+          # Check repository activity
+          LAST_COMMIT=$(git log -1 --format='%ci' 2>/dev/null || echo "Unknown")
+          echo "- **Last commit**: $LAST_COMMIT" >> $GITHUB_STEP_SUMMARY
+          
+          # Repository type check
+          if [ "${{ github.repository_visibility }}" == "private" ]; then
+            echo "- **⚠️ Notice**: Private repository - Actions minutes will be consumed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **✅ Status**: Public repository - unlimited Actions minutes" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📈 Job Summary
         if: always()
         run: |
           if [ "${{ steps.search.outputs.has_changes }}" == "true" ]; then
             echo "## ✅ Update Successful" >> $GITHUB_STEP_SUMMARY
-            echo "### 📈 Summary" >> $GITHUB_STEP_SUMMARY
-            if [ -f ".github/commit_messages.json" ]; then
-              PAPER_COUNT=$(cat .github/commit_messages.json | jq length)
-              echo "- **New papers found**: $PAPER_COUNT" >> $GITHUB_STEP_SUMMARY
-              echo "- **Branch created**: ${{ env.branch_name }}" >> $GITHUB_STEP_SUMMARY
-              echo "- **Status**: PR created and ready for review" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "### 📄 Papers Added" >> $GITHUB_STEP_SUMMARY
-              cat .github/commit_messages.json | jq -r '.[]' | while IFS= read -r message; do
-                echo "- $message" >> $GITHUB_STEP_SUMMARY
-              done
-            else
-              echo "- **Status**: PR created for review" >> $GITHUB_STEP_SUMMARY
-            fi
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🔍 **Next Steps**: Review and merge the PR manually" >> $GITHUB_STEP_SUMMARY
+            echo "### 📄 Results" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -f ".github/commit_messages.json" ]; then
+              PAPER_COUNT=$(cat .github/commit_messages.json | jq length 2>/dev/null || echo "0")
+              echo "- **New papers found**: $PAPER_COUNT" >> $GITHUB_STEP_SUMMARY
+              echo "- **Branch created**: ${{ steps.commits.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
+              echo "- **PR number**: #${{ steps.pr.outputs.pull-request-number }}" >> $GITHUB_STEP_SUMMARY
+              echo "- **Status**: ✅ PR created and ready for review" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              echo "### 📋 Papers Added" >> $GITHUB_STEP_SUMMARY
+              cat .github/commit_messages.json | jq -r '.[]' 2>/dev/null | while IFS= read -r message; do
+                if [ ! -z "$message" ] && [ "$message" != "null" ]; then
+                  echo "- 📄 $message" >> $GITHUB_STEP_SUMMARY
+                fi
+              done || echo "- Error reading commit messages" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **Status**: ✅ PR created for review" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🎯 Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "1. 🔍 Review the PR for accuracy" >> $GITHUB_STEP_SUMMARY
+            echo "2. ✅ Verify all papers are legitimate R1 models" >> $GITHUB_STEP_SUMMARY
+            echo "3. 🔗 Add any missing code/project links" >> $GITHUB_STEP_SUMMARY
+            echo "4. 🚀 Merge when ready" >> $GITHUB_STEP_SUMMARY
+            
           else
             echo "## ℹ️ No Updates Needed" >> $GITHUB_STEP_SUMMARY
-            echo "No new R1 papers found in the last 2 days." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No new R1 papers found in the last ${{ github.event.inputs.days_back || '3' }} days." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### 🔎 Search Details" >> $GITHUB_STEP_SUMMARY
             echo "- **Search scope**: Computer Science papers on arXiv" >> $GITHUB_STEP_SUMMARY
-            echo "- **Time range**: Last 2 days" >> $GITHUB_STEP_SUMMARY
-            echo "- **Patterns**: R1 as model/method name" >> $GITHUB_STEP_SUMMARY
-            echo "- **Next check**: Tomorrow at 02:00 UTC" >> $GITHUB_STEP_SUMMARY
+            echo "- **Time range**: Last ${{ github.event.inputs.days_back || '3' }} days" >> $GITHUB_STEP_SUMMARY
+            echo "- **Pattern matching**: Enhanced R1 model detection" >> $GITHUB_STEP_SUMMARY
+            echo "- **Categories**: cs.AI, cs.CL, cs.CV, cs.LG, cs.RO, cs.HC, cs.IR, cs.MM, cs.NE, cs.SD, cs.SI, cs.CR, cs.DC, cs.SE" >> $GITHUB_STEP_SUMMARY
+            echo "- **Next check**: Tomorrow at 02:00 UTC (10:00 Beijing)" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: 🧹 Cleanup
         if: always()
         run: |
+          # Clean up temporary files
           rm -f .github/has_changes.txt \
                 .github/commit_messages.json \
                 .github/pr_body.md
+          
+          echo "🧹 Cleanup completed"
 
       - name: 🚨 Error Notification
         if: failure()
         run: |
           echo "## ❌ Workflow Failed" >> $GITHUB_STEP_SUMMARY
-          echo "The auto-update process encountered an error." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔧 Possible Issues" >> $GITHUB_STEP_SUMMARY
-          echo "- arXiv API connection problems" >> $GITHUB_STEP_SUMMARY
-          echo "- README.md format changes" >> $GITHUB_STEP_SUMMARY
-          echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
-          echo "- Dependencies installation failure" >> $GITHUB_STEP_SUMMARY
+          echo "The R1 papers auto-update process encountered an error." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔍 **Action Required**: Check workflow logs and fix issues"
+          echo "### 🔧 Common Issues & Solutions" >> $GITHUB_STEP_SUMMARY
+          echo "1. **arXiv API Issues**" >> $GITHUB_STEP_SUMMARY
+          echo "   - Check if arXiv is accessible" >> $GITHUB_STEP_SUMMARY
+          echo "   - Verify API rate limits aren't exceeded" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "2. **README Format Issues**" >> $GITHUB_STEP_SUMMARY
+          echo "   - Ensure Papers table exists and has correct format" >> $GITHUB_STEP_SUMMARY
+          echo "   - Check table headers and separators" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Permission Issues**" >> $GITHUB_STEP_SUMMARY
+          echo "   - Verify workflow has write permissions" >> $GITHUB_STEP_SUMMARY
+          echo "   - Check GitHub token permissions" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "4. **Dependencies Issues**" >> $GITHUB_STEP_SUMMARY
+          echo "   - Check if Python packages installed correctly" >> $GITHUB_STEP_SUMMARY
+          echo "   - Verify network connectivity" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Recovery Options" >> $GITHUB_STEP_SUMMARY
+          echo "- **Manual Trigger**: Use 'Run workflow' button to retry" >> $GITHUB_STEP_SUMMARY
+          echo "- **Debug Mode**: Enable debug mode for detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "- **Extended Search**: Increase 'days_back' parameter" >> $GITHUB_STEP_SUMMARY
+          echo "- **Force Update**: Enable 'force_update' to bypass checks" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 **Action Required**: Check the workflow logs above for specific error details"
