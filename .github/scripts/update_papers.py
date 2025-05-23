@@ -1,30 +1,16 @@
-# .github/scripts/update_papers.py
 import requests
 import re
-import time
 import os
-from datetime import datetime
+import json
+import subprocess
+from datetime import datetime, timedelta
 from dateutil import parser as date_parser
 from bs4 import BeautifulSoup
 
-ARXIV_SEARCH_URL = "https://export.arxiv.org/api/query?search_query=all:R1&start=0&max_results=100&sortBy=submittedDate&sortOrder=descending"
-CS_CATEGORIES = {
-    "cs.AI",
-    "cs.CL",
-    "cs.CV",
-    "cs.LG",
-    "cs.NE",
-    "cs.IR",
-    "cs.CR",
-    "cs.RO",
-    "cs.MM",
-    "cs.SE",
-    "cs.DS",
-    "cs.IT",
-    "cs.SI",
-}
+ARXIV_BASE_API = "https://export.arxiv.org/api/query"
+CS_PREFIX = "cs."
 TITLE_PATTERN = re.compile(
-    r"(?:\b|_)(?:r1[-_]|[-_]r1|R1[-_]|[-_]R1)(?:\b|_)", re.IGNORECASE
+    r"(?<!\w)(([A-Za-z0-9\-]+[-_])?R1|R1[-_][A-Za-z0-9\-]+)(?!\w)", re.IGNORECASE
 )
 
 README_PATH = "README.md"
@@ -32,9 +18,6 @@ SEEN_PATH = ".github/seen_papers.txt"
 COMMIT_MSG_PATH = ".github/commit_messages.json"
 PR_BODY_PATH = ".github/pr_body.md"
 HAS_CHANGES_PATH = ".github/has_changes.txt"
-
-from xml.etree import ElementTree as ET
-import json
 
 
 def load_seen_ids():
@@ -49,9 +32,15 @@ def save_seen_ids(ids):
         f.writelines(f"{pid}\n" for pid in sorted(ids))
 
 
-def parse_entries(xml):
-    root = ET.fromstring(xml)
-    entries = []
+def fetch_arxiv_cs_r1_papers(date_from, date_to):
+    query = f"cat:cs.*+AND+all:R1"
+    url = f"{ARXIV_BASE_API}?search_query={query}&start=0&max_results=1000&sortBy=submittedDate&sortOrder=descending"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    from xml.etree import ElementTree as ET
+
+    root = ET.fromstring(resp.text)
+    results = []
     for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
         arxiv_id = entry.find("{http://www.w3.org/2005/Atom}id").text.split("/")[-1]
         title = (
@@ -62,28 +51,48 @@ def parse_entries(xml):
         summary = entry.find("{http://www.w3.org/2005/Atom}summary").text.strip()
         published = entry.find("{http://www.w3.org/2005/Atom}published").text
         published_date = date_parser.parse(published).date()
-        categories = entry.find(
+        if not (date_from <= published_date <= date_to):
+            continue
+
+        primary_category = entry.find(
             "{http://arxiv.org/schemas/atom}primary_category"
         ).attrib["term"]
-
-        if categories not in CS_CATEGORIES:
+        if not primary_category.startswith(CS_PREFIX):
             continue
         if not TITLE_PATTERN.search(title):
             continue
 
-        entries.append(
-            {
-                "id": arxiv_id,
-                "title": title,
-                "summary": summary,
-                "date": str(published_date),
-            }
-        )
-    return entries
+        authors = [
+            author.find("{http://www.w3.org/2005/Atom}name").text
+            for author in entry.findall("{http://www.w3.org/2005/Atom}author")
+        ]
+        links = {
+            l.attrib["title"]: l.attrib["href"]
+            for l in entry.findall("{http://www.w3.org/2005/Atom}link")
+            if "title" in l.attrib
+        }
+        paper_url = f"https://arxiv.org/abs/{arxiv_id}"
+
+        result = {
+            "id": arxiv_id,
+            "title": title,
+            "summary": summary,
+            "date": str(published_date),
+            "authors": authors,
+            "categories": [primary_category],
+            "paper_url": paper_url,
+            "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+            "code_url": links.get("code", "-"),
+            "comment": entry.find("{http://arxiv.org/schemas/atom}comment").text
+            if entry.find("{http://arxiv.org/schemas/atom}comment") is not None
+            else "-",
+        }
+        results.append(result)
+    return results
 
 
-def insert_to_readme(papers):
-    with open(README_PATH, "r") as f:
+def insert_paper_to_readme(paper):
+    with open(README_PATH, "r", encoding="utf-8") as f:
         content = f.read()
 
     pattern = re.compile(
@@ -95,54 +104,80 @@ def insert_to_readme(papers):
         return False
 
     header, body = match.groups()
-    rows = body.strip().split("\n") if body.strip() else []
+    existing_rows = body.strip().split("\n") if body.strip() else []
 
-    new_rows = []
-    commit_messages = []
-    for paper in sorted(papers, key=lambda x: x["date"], reverse=True):
-        row = f"| [{paper['title']}](https://arxiv.org/abs/{paper['id']}) | - | - | - | - | {paper['date']} |"
-        new_rows.append(row)
-        commit_messages.append({"msg": f"add {paper['title']}", "id": paper["id"]})
+    # Extract existing arXiv IDs from the table to avoid duplicates
+    existing_ids = set()
+    for row in existing_rows:
+        m = re.search(r"https://arxiv.org/abs/([0-9]+\.[0-9]+)", row)
+        if m:
+            existing_ids.add(m.group(1))
 
-    all_rows = new_rows + rows
+    if paper["id"] in existing_ids:
+        return False
+
+    row = (
+        f"| [{paper['title']}]({paper['paper_url']})<br>{', '.join(paper['authors'])}<br>{paper['categories'][0]}<br>{paper['summary'][:80]}... | "
+        f"[PDF]({paper['pdf_url']}) | - | - | - | {paper['date']} |"
+    )
+    all_rows = [row] + existing_rows
     new_body = "\n".join(all_rows)
     new_content = pattern.sub(f"\\1{new_body}\n", content)
 
-    with open(README_PATH, "w") as f:
+    with open(README_PATH, "w", encoding="utf-8") as f:
         f.write(new_content)
-
-    with open(COMMIT_MSG_PATH, "w") as f:
-        json.dump(commit_messages, f)
-
-    with open(PR_BODY_PATH, "w") as f:
-        f.write(f"## 🆕 Added {len(papers)} New R1 Papers\n\n")
-        for paper in papers:
-            f.write(
-                f"- [{paper['title']}](https://arxiv.org/abs/{paper['id']}) ({paper['date']})\n"
-            )
-
     return True
+
+
+def append_to_pr_body(pr_body, paper):
+    pr_body.append(
+        f"- **[{paper['title']}]({paper['paper_url']})** ({paper['date']})  \n"
+        f"  - Authors: {', '.join(paper['authors'])}\n"
+        f"  - Category: {', '.join(paper['categories'])}\n"
+        f"  - PDF: [{paper['pdf_url']}]({paper['pdf_url']})\n"
+        f"  - Summary: {paper['summary']}\n"
+        + (f"  - Comment: {paper['comment']}\n" if paper["comment"] != "-" else "")
+        + "\n"
+    )
 
 
 def main():
     seen_ids = load_seen_ids()
-
-    res = requests.get(ARXIV_SEARCH_URL)
-    papers = parse_entries(res.text)
-
-    new_papers = [p for p in papers if p["id"] not in seen_ids]
+    today = datetime.utcnow().date()
+    date_from = today - timedelta(days=3)
+    date_to = today
+    papers = fetch_arxiv_cs_r1_papers(date_from, date_to)
+    new_papers = [
+        p for p in sorted(papers, key=lambda x: x["date"]) if p["id"] not in seen_ids
+    ]
     if not new_papers:
         with open(HAS_CHANGES_PATH, "w") as f:
             f.write("false")
         return
 
-    seen_ids.update(p["id"] for p in new_papers)
-    save_seen_ids(seen_ids)
+    pr_body = [f"## 🆕 Added {len(new_papers)} New R1 Papers (CS domain)\n"]
 
-    insert_to_readme(new_papers)
+    commit_messages = []
+    for paper in new_papers:
+        ok = insert_paper_to_readme(paper)
+        if ok:
+            seen_ids.add(paper["id"])
+            save_seen_ids(seen_ids)
+            # Commit after each paper
+            subprocess.run(["git", "add", README_PATH], check=True)
+            msg = f"add {paper['title']}"
+            subprocess.run(["git", "commit", "-m", msg], check=True)
+            commit_messages.append({"msg": msg, "id": paper["id"]})
+            append_to_pr_body(pr_body, paper)
+
+    with open(COMMIT_MSG_PATH, "w", encoding="utf-8") as f:
+        json.dump(commit_messages, f, ensure_ascii=False)
+
+    with open(PR_BODY_PATH, "w", encoding="utf-8") as f:
+        f.write("".join(pr_body))
 
     with open(HAS_CHANGES_PATH, "w") as f:
-        f.write("true")
+        f.write("true" if commit_messages else "false")
 
 
 if __name__ == "__main__":
