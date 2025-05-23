@@ -2,9 +2,8 @@ name: 🤖 Auto Update R1 Papers
 
 on:
   schedule:
-    # Run daily at 02:00 UTC (10:00 Beijing Time)
-    - cron: '0 2 * * *'
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '0 2 * * *'  # Daily at 02:00 UTC (10:00 Beijing Time)
+  workflow_dispatch:
 
 jobs:
   update-papers:
@@ -25,13 +24,17 @@ jobs:
       - name: 🐍 Create virtualenv and install dependencies
         run: |
           uv venv .venv
-          .venv/bin/uv pip install requests python-dateutil
+          source .venv/bin/activate
+          uv pip install requests python-dateutil
+        shell: bash
 
       - name: 🔍 Search and Update Papers
         id: search
         run: |
-          .venv/bin/python .github/scripts/update_papers.py
+          source .venv/bin/activate
+          python .github/scripts/update_papers.py
           echo "has_changes=$(cat .github/has_changes.txt)" >> $GITHUB_OUTPUT
+        shell: bash
 
       - name: 📅 Get Current Date
         id: date
@@ -46,7 +49,9 @@ jobs:
       - name: 📝 Create Commits
         if: steps.search.outputs.has_changes == 'true'
         run: |
-          .venv/bin/python .github/scripts/commit_papers.py
+          source .venv/bin/activate
+          python .github/scripts/commit_papers.py
+        shell: bash
 
       - name: 🔀 Push to New Branch
         if: steps.search.outputs.has_changes == 'true'
