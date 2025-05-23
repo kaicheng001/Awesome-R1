@@ -57,6 +57,12 @@ jobs:
           echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
           echo "timestamp=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
+      - name: 🧹 Pre-cleanup Temporary Files
+        run: |
+          echo "🧹 Cleaning up any existing temporary files..."
+          rm -f .github/has_changes.txt .github/commit_messages.json .github/pr_body.md
+          echo "✅ Pre-cleanup completed"
+
       - name: 🔍 Search and Update Papers
         id: search
         run: |
@@ -71,8 +77,13 @@ jobs:
             PYTHON_ARGS="$PYTHON_ARGS --debug"
           fi
           
-          # For GitHub Actions, don't cleanup (workflow handles it)
+          # For GitHub Actions, don't cleanup automatically (workflow handles it)
           PYTHON_ARGS="$PYTHON_ARGS --no-cleanup"
+          
+          # Set custom days back if provided
+          if [ ! -z "${{ github.event.inputs.days_back }}" ]; then
+            export DAYS_BACK="${{ github.event.inputs.days_back }}"
+          fi
           
           python .github/scripts/update_papers.py $PYTHON_ARGS
           
@@ -254,15 +265,53 @@ jobs:
             echo "- **Next check**: Tomorrow at 02:00 UTC (10:00 Beijing)" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: 🧹 Cleanup
+      - name: 🧹 Cleanup Temporary Files
         if: always()
         run: |
-          # Clean up temporary files
-          rm -f .github/has_changes.txt \
-                .github/commit_messages.json \
-                .github/pr_body.md
+          echo "🧹 Starting cleanup of temporary files..."
           
-          echo "🧹 Cleanup completed"
+          # List files before cleanup (for debugging)
+          echo "Files in .github/ before cleanup:"
+          ls -la .github/ | grep -E "(has_changes|commit_messages|pr_body)" || echo "No temp files found"
+          
+          # Clean up temporary files
+          CLEANED=0
+          for file in .github/has_changes.txt .github/commit_messages.json .github/pr_body.md; do
+            if [ -f "$file" ]; then
+              rm -f "$file"
+              echo "🗑️ Removed: $file"
+              CLEANED=$((CLEANED + 1))
+            fi
+          done
+          
+          echo "🧹 Cleanup completed. Removed $CLEANED files."
+          
+          # Verify cleanup
+          echo "Files in .github/ after cleanup:"
+          ls -la .github/ | grep -E "(has_changes|commit_messages|pr_body)" || echo "✅ All temp files cleaned"
+
+      - name: 🔄 Reset Repository State (on failure)
+        if: failure()
+        run: |
+          echo "🔄 Workflow failed, checking for uncommitted changes..."
+          
+          # Check if README was modified but not committed properly
+          if git diff --quiet README.md; then
+            echo "✅ README.md is clean"
+          else
+            echo "⚠️ README.md has uncommitted changes, reverting..."
+            git checkout README.md
+            echo "✅ README.md reverted to last committed state"
+          fi
+          
+          # Check for any staged changes
+          if git diff --cached --quiet; then
+            echo "✅ No staged changes to clean"
+          else
+            echo "⚠️ Found staged changes, unstaging..."
+            git reset HEAD
+            echo "✅ Staged changes cleared"
+          fi
 
       - name: 🚨 Error Notification
         if: failure()
@@ -282,7 +331,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "3. **Permission Issues**" >> $GITHUB_STEP_SUMMARY
           echo "   - Verify workflow has write permissions" >> $GITHUB_STEP_SUMMARY
-          echo "   - Check GitHub token permissions" >> $GITHUB_STEP_SUMMARY
+          echo "   - Check 'Allow GitHub Actions to create and approve pull requests'" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "4. **Dependencies Issues**" >> $GITHUB_STEP_SUMMARY
           echo "   - Check if Python packages installed correctly" >> $GITHUB_STEP_SUMMARY

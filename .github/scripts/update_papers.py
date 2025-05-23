@@ -641,12 +641,16 @@ Found and added {len(self.new_papers)} new R1 model papers from arXiv CS categor
         if cleaned > 0:
             print(f"🧹 Cleaned {cleaned} temporary files")
 
-    def run(self, debug=False, cleanup=True):
+    def run(self, debug=False, cleanup=True, days_back=None):
         """Run main process"""
         self.debug = debug
 
         print("🚀 Starting Enhanced R1 Papers Bot...")
         print(f"📅 Current time: {datetime.now()}")
+
+        # Get days_back from environment variable if not provided
+        if days_back is None:
+            days_back = int(os.getenv("DAYS_BACK", 3))
 
         # Clean up any existing temp files first
         if cleanup:
@@ -655,9 +659,11 @@ Found and added {len(self.new_papers)} new R1 model papers from arXiv CS categor
         # Load existing papers
         self.load_existing_papers()
 
-        # Search for new papers (last 3 days to handle weekends)
-        papers = self.search_arxiv_papers(days_back=3)
-        print(f"📊 Found {len(papers)} total CS papers from arXiv (last 3 days)")
+        # Search for new papers
+        papers = self.search_arxiv_papers(days_back=days_back)
+        print(
+            f"📊 Found {len(papers)} total CS papers from arXiv (last {days_back} days)"
+        )
 
         # Process each paper with enhanced filtering
         processed_count = 0
@@ -725,6 +731,15 @@ if __name__ == "__main__":
     no_cleanup = "--no-cleanup" in sys.argv
     cleanup_only = "--cleanup" in sys.argv
 
+    # Parse days back argument
+    days_back = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--days-back" and i + 1 < len(sys.argv):
+            try:
+                days_back = int(sys.argv[i + 1])
+            except ValueError:
+                print(f"⚠️ Invalid days-back value: {sys.argv[i + 1]}")
+
     # If cleanup only, just clean and exit
     if cleanup_only:
         bot = R1PapersBot()
@@ -736,7 +751,7 @@ if __name__ == "__main__":
     bot = R1PapersBot()
 
     try:
-        success = bot.run(debug=debug_mode, cleanup=not no_cleanup)
+        success = bot.run(debug=debug_mode, cleanup=not no_cleanup, days_back=days_back)
         print(f"\n🎯 Run completed successfully: {success}")
     except KeyboardInterrupt:
         print("\n⏹️ Operation cancelled by user")
