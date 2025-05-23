@@ -122,7 +122,8 @@ def insert_paper_to_readme(paper):
     )
     all_rows = [row] + existing_rows
     new_body = "\n".join(all_rows)
-    new_content = pattern.sub(f"\\1{new_body}\n", content)
+    # FIX: use a function as repl to avoid escape issues
+    new_content = pattern.sub(lambda m: m.group(1) + new_body + "\n", content)
 
     with open(README_PATH, "w", encoding="utf-8") as f:
         f.write(new_content)
