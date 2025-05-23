@@ -1,0 +1,160 @@
+# .github/workflows/update-r1-papers.yml
+name: 🤖 Auto Update R1 Papers
+
+on:
+  schedule:
+    # Run daily at 02:00 UTC (10:00 Beijing Time)
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-papers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: 📦 Install Dependencies
+      run: |
+        pip install requests python-dateutil
+        
+    - name: 🔍 Search and Update Papers
+      id: search
+      run: |
+        python .github/scripts/update_papers.py
+        echo "has_changes=$(cat .github/has_changes.txt)" >> $GITHUB_OUTPUT
+        
+    - name: 📅 Get Current Date
+      id: date
+      run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        
+    - name: 🔧 Configure Git
+      if: steps.search.outputs.has_changes == 'true'
+      run: |
+        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+    - name: 📝 Create Commits
+      if: steps.search.outputs.has_changes == 'true'
+      run: |
+        # Create a simple commit script
+        cat > commit_papers.py << 'EOF'
+        import json
+        import subprocess
+        import sys
+        import os
+
+        try:
+            # Check if there are changes to commit
+            result = subprocess.run(['git', 'status', '--porcelain'], 
+                                  capture_output=True, text=True)
+            
+            if not result.stdout.strip():
+                print("No changes to commit")
+                sys.exit(0)
+            
+            # Read commit messages if file exists
+            if os.path.exists('.github/commit_messages.json'):
+                with open('.github/commit_messages.json', 'r') as f:
+                    messages = json.load(f)
+                
+                # Stage changes
+                subprocess.run(['git', 'add', 'README.md'], check=True)
+                
+                # Create a single commit with all papers
+                if len(messages) == 1:
+                    commit_msg = f"🤖 Add R1 paper: {messages[0]}"
+                else:
+                    commit_msg = f"🤖 Add {len(messages)} new R1 papers\n\n"
+                    for msg in messages:
+                        commit_msg += f"- {msg}\n"
+                
+                subprocess.run(['git', 'commit', '-m', commit_msg], check=True)
+                print(f"✅ Created commit with {len(messages)} papers")
+            else:
+                # Fallback: stage and commit any changes
+                subprocess.run(['git', 'add', 'README.md'], check=True)
+                subprocess.run(['git', 'commit', '-m', '🤖 Update R1 papers'], check=True)
+                print("✅ Created commit")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Git error: {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        EOF
+                
+                python commit_papers.py
+                
+            - name: 🔀 Push to New Branch
+              if: steps.search.outputs.has_changes == 'true'
+              run: |
+                BRANCH_NAME="auto-update/r1-papers-${{ steps.date.outputs.date }}"
+                git checkout -b $BRANCH_NAME
+                git push origin $BRANCH_NAME
+                echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+                
+            - name: 📋 Create Pull Request
+              if: steps.search.outputs.has_changes == 'true'
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                # Read PR body if exists
+                if [ -f .github/pr_body.md ]; then
+                  PR_BODY=$(<.github/pr_body.md)
+                else
+                  PR_BODY="Automated update of R1 papers"
+                fi
+                
+                # Create PR using GitHub CLI
+                gh pr create \
+                  --title "🤖 [Auto Update] New R1 Model Papers - ${{ steps.date.outputs.date }}" \
+                  --body "$PR_BODY" \
+                  --base main \
+                  --head "${{ env.branch_name }}" \
+                  --label "automated" \
+                  --label "papers" \
+                  --label "enhancement" \
+                  --assignee "${{ github.repository_owner }}" \
+                  --reviewer "${{ github.repository_owner }}" || true
+                
+                echo "✅ Pull Request created successfully"
+                echo "📝 Please review the PR before merging"
+                
+            - name: 📊 Job Summary
+              if: always()
+              run: |
+                if [ "${{ steps.search.outputs.has_changes }}" == "true" ]; then
+                  echo "## ✅ Update Successful" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "A new Pull Request has been created for review." >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  if [ -f .github/pr_body.md ]; then
+                    # Show first 20 lines of PR body in summary
+                    head -n 20 .github/pr_body.md >> $GITHUB_STEP_SUMMARY
+                  fi
+                else
+                  echo "## ℹ️ No Updates Needed" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "No new R1 model papers found today. Repository is up to date!" >> $GITHUB_STEP_SUMMARY
+                fi
+                
+            - name: 🧹 Cleanup
+              if: always()
+              run: |
+                rm -f .github/has_changes.txt
+                rm -f .github/commit_messages.json
+                rm -f .github/pr_body.md
+                rm -f commit_papers.py
