@@ -28,6 +28,11 @@ jobs:
           uv pip install requests python-dateutil beautifulsoup4
         shell: bash
 
+      - name: ⚖️ Configure Git
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
       - name: 🔍 Search and Update Papers
         id: search
         run: |
@@ -39,19 +44,6 @@ jobs:
       - name: 📅 Get Current Date
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-
-      - name: ⚖️ Configure Git
-        if: steps.search.outputs.has_changes == 'true'
-        run: |
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-
-      - name: 📝 Create Commits
-        if: steps.search.outputs.has_changes == 'true'
-        run: |
-          source .venv/bin/activate
-          python .github/scripts/commit_papers.py
-        shell: bash
 
       - name: 🔀 Push to New Branch
         if: steps.search.outputs.has_changes == 'true'
