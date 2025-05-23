@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      
+
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
@@ -23,7 +23,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: 🐽 Install Dependencies
-        run: uv pip install requests python-dateutil
+        run: uv pip install --system requests python-dateutil
 
       - name: 🔍 Search and Update Papers
         id: search
