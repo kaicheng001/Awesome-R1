@@ -1,0 +1,45 @@
+name: 🤖 Daily R1 Papers Update
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # UTC 02:00 = 北京时间 10:00
+  
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if no new papers'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  trigger-bot:
+    name: Trigger R1 Papers Bot
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📅 Get Current Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      
+      - name: 🚀 Trigger Repository Dispatch
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+          event-type: daily_update
+          client-payload: |
+            {
+              "triggered_by": "github_actions",
+              "date": "${{ steps.date.outputs.date }}",
+              "force_update": "${{ github.event.inputs.force_update || 'false' }}"
+            }
+      
+      - name: 📊 Log Trigger
+        run: |
+          echo "## 🤖 Bot Trigger Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: ${{ steps.date.outputs.date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: GitHub Actions (scheduled)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Force update**: ${{ github.event.inputs.force_update || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Event dispatched**: daily_update" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The R1 Papers Bot should now process the update request." >> $GITHUB_STEP_SUMMARY
